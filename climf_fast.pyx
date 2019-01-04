@@ -19,6 +19,7 @@ ctypedef np.int32_t INTEGER
 
 cdef DOUBLE g(DOUBLE x) nogil:
     """sigmoid function"""
+    x = max(min(x, 10), -10)
     return 1/(1+exp(-x))
 
 cdef DOUBLE dg(DOUBLE x) nogil:
@@ -87,6 +88,7 @@ def compute_mrr_fast(np.ndarray[int, ndim=1, mode='c'] test_user_ids, np.ndarray
     assert(len(mrr) == len(test_user_ids))
     return np.mean(mrr)
 
+
 cpdef climf_fast(CSRDataset dataset,
                np.ndarray[DOUBLE, ndim=2, mode='c'] U,
                np.ndarray[DOUBLE, ndim=2, mode='c'] V,
@@ -103,12 +105,12 @@ cpdef climf_fast(CSRDataset dataset,
 
     cdef unsigned int i
 
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] f = np.zeros(n_items, dtype=np.float64, order='c')
+    cdef DOUBLE[::1] f = np.zeros(n_items, dtype=np.float64, order='c')
 
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dU = np.zeros(n_factors, dtype=np.float64, order="c")
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dV = np.zeros(n_factors, dtype=np.float64, order="c")
+    cdef DOUBLE[::1] dU = np.zeros(n_factors, dtype=np.float64, order="c")
+    cdef DOUBLE[::1] dV = np.zeros(n_factors, dtype=np.float64, order="c")
 
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] V_j_minus_V_k = np.zeros(n_factors, dtype=np.float64, order="c")
+    cdef DOUBLE[::1] V_j_minus_V_k = np.zeros(n_factors, dtype=np.float64, order="c")
 
     if shuffle > 0:
         dataset.shuffle(seed)
