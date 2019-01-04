@@ -93,21 +93,21 @@ def compute_mrr_fast(np.ndarray[int, ndim=1, mode='c'] test_user_ids, np.ndarray
     return np.mean(mrr)
 
 
-cpdef climf_fast(CSRDataset dataset,
-               np.ndarray[DOUBLE, ndim=2, mode='c'] U,
-               np.ndarray[DOUBLE, ndim=2, mode='c'] V,
-               double lbda,
-               double gamma,
-               int n_factors,
-               int shuffle,
-               int seed):
+cpdef climf_fast(int[::1] X_indices, int[::1] X_indptr, 
+                 DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
+                 int[::1] user_indices,
+                 double lbda,
+                 double gamma,
+                 int n_factors,
+                 int shuffle,
+                 int seed):
 
     # get the data information into easy vars
-    cdef Py_ssize_t n_samples = dataset.n_samples
     cdef Py_ssize_t n_users = U.shape[0]
     cdef Py_ssize_t n_items = V.shape[0]
 
-    cdef unsigned int i
+    cdef unsigned int i, lo, hi
+    cdef int[::1] x_ind_ptr
 
     cdef DOUBLE[::1] f = np.zeros(n_items, dtype=np.float64, order='c')
 
@@ -121,25 +121,21 @@ cpdef climf_fast(CSRDataset dataset,
 
     with nogil:
         for i in range(n_users):
-            climf_fast_u(dataset, U, V, dU, dV, f, V_j_minus_V_k, i, lbda, gamma, n_factors)
+            lo, hi = X_indptr[user_indices[i]], X_indptr[user_indices[i] + 1]
+            x_ind_ptr = X_indices[lo:hi]
+            climf_fast_u(x_ind_ptr, U, V, dU, dV, f, V_j_minus_V_k, i, lbda, gamma, n_factors)
         
 
-cdef void climf_fast_u(CSRDataset dataset, DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
+cdef void climf_fast_u(int[::1] x_ind_ptr, DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
                        DOUBLE[::1] dU, DOUBLE[::1] dV, DOUBLE[::1] f,
                        DOUBLE[::1] V_j_minus_V_k, unsigned int i, double lbda,
                        double gamma, int n_factors) nogil:
-    cdef DOUBLE * x_data_ptr = NULL
-    cdef INTEGER * x_ind_ptr = NULL
-
     # helper variable
-    cdef int xnnz
+    cdef int xnnz = x_ind_ptr.shape[0]
     cdef DOUBLE y = 0.0
-    cdef DOUBLE sample_weight = 1.0
     cdef unsigned int j, k, idx, idx_j, idx_k
 
     cdef DOUBLE dVUpdate, dUUpdate
-
-    dataset.next( & x_data_ptr, & x_ind_ptr, & xnnz, & y, & sample_weight)
 
     # dU = -lbda * U[i]
     for idx in range(n_factors):
@@ -176,84 +172,3 @@ cdef void climf_fast_u(CSRDataset dataset, DOUBLE[:, ::1] U, DOUBLE[:, ::1] V,
     # U[i] += gamma*dU
     for idx in range(n_factors):
         U[i, idx] += gamma * dU[idx]
-
-
-cdef class CSRDataset:
-    """An sklearn ``SequentialDataset`` backed by a scipy sparse CSR matrix. This is an ugly hack for the moment until I find the best way to link to sklearn. """
-
-    cdef Py_ssize_t n_samples
-    cdef int current_index
-    cdef int stride
-    cdef DOUBLE *X_data_ptr
-    cdef INTEGER *X_indptr_ptr
-    cdef INTEGER *X_indices_ptr
-    cdef DOUBLE *Y_data_ptr
-    cdef np.ndarray feature_indices
-    cdef INTEGER *feature_indices_ptr
-    cdef np.ndarray index
-    cdef INTEGER *index_data_ptr
-    cdef DOUBLE *sample_weight_data
-
-    def __cinit__(self, np.ndarray[DOUBLE, ndim=1, mode='c'] X_data,
-                  np.ndarray[INTEGER, ndim=1, mode='c'] X_indptr,
-                  np.ndarray[INTEGER, ndim=1, mode='c'] X_indices,
-                  np.ndarray[DOUBLE, ndim=1, mode='c'] Y,
-                  np.ndarray[DOUBLE, ndim=1, mode='c'] sample_weight):
-        """Dataset backed by a scipy sparse CSR matrix.
-
-        The feature indices of ``x`` are given by x_ind_ptr[0:nnz].
-        The corresponding feature values are given by
-        x_data_ptr[0:nnz].
-
-        Parameters
-        ----------
-        X_data : ndarray, dtype=np.float64, ndim=1, mode='c'
-            The data array of the CSR matrix; a one-dimensional c-continuous
-            numpy array of dtype np.float64.
-        X_indptr : ndarray, dtype=np.int32, ndim=1, mode='c'
-            The index pointer array of the CSR matrix; a one-dimensional
-            c-continuous numpy array of dtype np.int32.
-        X_indices : ndarray, dtype=np.int32, ndim=1, mode='c'
-            The column indices array of the CSR matrix; a one-dimensional
-            c-continuous numpy array of dtype np.int32.
-        Y : ndarray, dtype=np.float64, ndim=1, mode='c'
-            The target values; a one-dimensional c-continuous numpy array of
-            dtype np.float64.
-        sample_weights : ndarray, dtype=np.float64, ndim=1, mode='c'
-            The weight of each sample; a one-dimensional c-continuous numpy
-            array of dtype np.float64.
-        """
-        self.n_samples = Y.shape[0]
-        self.current_index = -1
-        self.X_data_ptr = <DOUBLE *>X_data.data
-        self.X_indptr_ptr = <INTEGER *>X_indptr.data
-        self.X_indices_ptr = <INTEGER *>X_indices.data
-        self.Y_data_ptr = <DOUBLE *>Y.data
-        self.sample_weight_data = <DOUBLE *> sample_weight.data
-        # Use index array for fast shuffling
-        cdef np.ndarray[INTEGER, ndim=1,
-                        mode='c'] index = np.arange(0, self.n_samples,
-                                                    dtype=np.int32)
-        self.index = index
-        self.index_data_ptr = <INTEGER *> index.data
-
-    cdef void next(self, DOUBLE **x_data_ptr, INTEGER **x_ind_ptr,
-                   int *nnz, DOUBLE *y, DOUBLE *sample_weight) nogil:
-        cdef int current_index = self.current_index
-        if current_index >= (self.n_samples - 1):
-            current_index = -1
-
-        current_index += 1
-        cdef int sample_idx = self.index_data_ptr[current_index]
-        cdef int offset = self.X_indptr_ptr[sample_idx]
-        y[0] = self.Y_data_ptr[sample_idx]
-        x_data_ptr[0] = self.X_data_ptr + offset
-        x_ind_ptr[0] = self.X_indices_ptr + offset
-        nnz[0] = self.X_indptr_ptr[sample_idx + 1] - offset
-        sample_weight[0] = self.sample_weight_data[sample_idx]
-
-        self.current_index = current_index
-
-    cdef void shuffle(self, seed):
-        np.random.RandomState(seed).shuffle(self.index)
-

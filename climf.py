@@ -15,14 +15,8 @@ import sys
 import time
 import numpy as np
 import random
-from climf_fast import climf_fast, CSRDataset, compute_mrr_fast
+from climf_fast import climf_fast, compute_mrr_fast
 
-def _make_dataset(X):
-    """Create ``Dataset`` abstraction for sparse and dense inputs."""
-    y_i = np.ones(X.shape[0], dtype=np.float64, order='C')
-    sample_weight = np.ones(X.shape[0], dtype=np.float64, order='C') # ignore sample weight for the moment
-    dataset = CSRDataset(X.data, X.indptr, X.indices, y_i, sample_weight)
-    return dataset
 
 class CLiMF:
     def __init__(self, dim=10, lbda=0.001, gamma=0.0001, max_iters=5, verbose=True,
@@ -36,9 +30,9 @@ class CLiMF:
         self.seed = seed
 
     def fit(self, X):
-        data = _make_dataset(X)
-        self.U = 0.01*np.random.random_sample(size=(X.shape[0], self.dim))
-        self.V = 0.01*np.random.random_sample(size=(X.shape[1], self.dim))
+        self.U = 0.01 * np.random.random_sample(size=(X.shape[0], self.dim))
+        self.V = 0.01 * np.random.random_sample(size=(X.shape[1], self.dim))
+        X_indices, X_indptr = X.indices, X.indptr
 
         num_train_sample_users = min(X.shape[0],100)
         train_sample_users = np.array(random.sample(xrange(X.shape[0]),num_train_sample_users), dtype=np.int32)
@@ -46,7 +40,11 @@ class CLiMF:
         
         for it in xrange(self.max_iters):
             start_t = time.time()
-            climf_fast(data, self.U, self.V, self.lbda, self.gamma, self.dim, 
+            if self.shuffle:
+                user_indices = np.random.permutation(X.shape[0]).astype('int32')
+            else:
+                user_indices = np.arange(X.shape[0])
+            climf_fast(X_indices, X_indptr, self.U, self.V, user_indices, self.lbda, self.gamma, self.dim, 
                        self.shuffle, self.seed)
             t = time.time() - start_t
             print('iteration {0}:'.format(it+1))
