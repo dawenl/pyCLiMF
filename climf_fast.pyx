@@ -17,20 +17,20 @@ np.import_array()
 ctypedef np.float64_t DOUBLE
 ctypedef np.int32_t INTEGER
 
-cdef g(DOUBLE x):
+cdef DOUBLE g(DOUBLE x) nogil:
     """sigmoid function"""
     return 1/(1+exp(-x))
 
-cdef dg(DOUBLE x):
+cdef DOUBLE dg(DOUBLE x) nogil:
     """derivative of sigmoid function"""
     return exp(x)/(1+exp(x))**2
 
-cdef np.ndarray[DOUBLE, ndim=1, mode='c'] precompute_f(np.ndarray[DOUBLE, ndim=2, mode='c'] U,
-                                                       np.ndarray[DOUBLE, ndim=2, mode='c'] V,
-                                                       INTEGER *x_ind_ptr,
-                                                       int xnnz,
-                                                       int num_factors,
-                                                       int i):
+cdef void precompute_f(DOUBLE[::1] f, 
+                       DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
+                       INTEGER *x_ind_ptr,
+                       int xnnz,
+                       int num_factors,
+                       int i) nogil:
     """precompute f[j] = <U[i],V[j]>
         params:
           data: scipy csr sparse matrix containing user->(item,count)
@@ -45,13 +45,12 @@ cdef np.ndarray[DOUBLE, ndim=1, mode='c'] precompute_f(np.ndarray[DOUBLE, ndim=2
     cdef DOUBLE dot_prod
 
     # create f as a ndarray of len(nnz)
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] f = np.zeros(xnnz, dtype=np.float64, order="c")
     for j in range(xnnz):
         dot_prod = 0.0
         for factor in range(num_factors):
             dot_prod += U[i,factor] * V[x_ind_ptr[j],factor]
         f[j] = dot_prod
-    return f
+
 
 def compute_mrr_fast(np.ndarray[int, ndim=1, mode='c'] test_user_ids, np.ndarray test_user_data,
                 np.ndarray[DOUBLE, ndim=2, mode='c'] U, np.ndarray[DOUBLE, ndim=2, mode='c'] V):
@@ -88,93 +87,88 @@ def compute_mrr_fast(np.ndarray[int, ndim=1, mode='c'] test_user_ids, np.ndarray
     assert(len(mrr) == len(test_user_ids))
     return np.mean(mrr)
 
-def climf_fast(CSRDataset dataset,
+cpdef climf_fast(CSRDataset dataset,
                np.ndarray[DOUBLE, ndim=2, mode='c'] U,
                np.ndarray[DOUBLE, ndim=2, mode='c'] V,
                double lbda,
                double gamma,
                int n_factors,
-               int n_iter,
                int shuffle,
-               int seed,
-               np.ndarray[int, ndim=1, mode='c'] sample_user_ids,
-               np.ndarray sample_user_data):
+               int seed):
 
     # get the data information into easy vars
     cdef Py_ssize_t n_samples = dataset.n_samples
     cdef Py_ssize_t n_users = U.shape[0]
     cdef Py_ssize_t n_items = V.shape[0]
 
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] f
+    cdef unsigned int i
 
+    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] f = np.zeros(n_items, dtype=np.float64, order='c')
+
+    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dU = np.zeros(n_factors, dtype=np.float64, order="c")
+    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dV = np.zeros(n_factors, dtype=np.float64, order="c")
+
+    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] V_j_minus_V_k = np.zeros(n_factors, dtype=np.float64, order="c")
+
+    if shuffle > 0:
+        dataset.shuffle(seed)
+
+    for i in range(n_users):
+        climf_fast_u(dataset, U, V, dU, dV, f, V_j_minus_V_k, i, lbda, gamma, n_factors)
+        
+
+cdef void climf_fast_u(CSRDataset dataset, DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
+                       DOUBLE[::1] dU, DOUBLE[::1] dV, DOUBLE[::1] f,
+                       DOUBLE[::1] V_j_minus_V_k, unsigned int i, double lbda,
+                       double gamma, int n_factors) nogil:
     cdef DOUBLE * x_data_ptr = NULL
     cdef INTEGER * x_ind_ptr = NULL
 
     # helper variable
     cdef int xnnz
-    cdef double eta = 0.0
-    cdef double p = 0.0
     cdef DOUBLE y = 0.0
     cdef DOUBLE sample_weight = 1.0
-    cdef unsigned int i = 0
-    cdef unsigned int t = 0
-    cdef unsigned int j = 0
-    cdef unsigned int k = 0
-    cdef unsigned int idx = 0
-    cdef unsigned int idx_j = 0
-    cdef unsigned int idx_k = 0
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dU = np.zeros(n_factors, dtype=np.float64, order="c")
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] dV = np.zeros(n_factors, dtype=np.float64, order="c")
-    cdef DOUBLE dVUpdate = 0.0
-    cdef DOUBLE dUUpdate = 0.0
-    cdef np.ndarray[DOUBLE, ndim=1, mode='c'] V_j_minus_V_k = np.zeros(n_factors, dtype=np.float64, order="c")
+    cdef unsigned int j, k, idx, idx_j, idx_k
 
-    for t in range(n_iter):
-        if shuffle > 0:
-            dataset.shuffle(seed)
+    cdef DOUBLE dVUpdate, dUUpdate
 
-        for i in range(n_users):
-            dataset.next( & x_data_ptr, & x_ind_ptr, & xnnz, & y,
-                             & sample_weight)
+    dataset.next( & x_data_ptr, & x_ind_ptr, & xnnz, & y, & sample_weight)
 
-            # dU = -lbda * U[i]
+    # dU = -lbda * U[i]
+    for idx in range(n_factors):
+        dU[idx] = -lbda * U[i, idx]
+
+    precompute_f(f, U, V, x_ind_ptr, xnnz, n_factors, i)
+
+    for j in range(xnnz):
+        idx_j = x_ind_ptr[j]
+        # dV = g(-f[j])-lbda*V[j]
+        for idx in range(n_factors):
+                dV[idx] = g(-f[j]) - lbda * V[idx_j, idx]
+
+        for k in range(xnnz):
+            dVUpdate = dg(f[j]-f[k])*(1/(1-g(f[k]-f[j]))-1/(1-g(f[j]-f[k])))
+            # dV += dg(f[j]-f[k])*(1/(1-g(f[k]-f[j]))-1/(1-g(f[j]-f[k])))*U[i]
             for idx in range(n_factors):
-                dU[idx] = -lbda * U[i, idx]
-
-            f = precompute_f(U, V, x_ind_ptr, xnnz, n_factors, i)
-
-            for j in range(xnnz):
-                idx_j = x_ind_ptr[j]
-                # dV = g(-f[j])-lbda*V[j]
-                for idx in range(n_factors):
-                     dV[idx] = g(-f[j]) - lbda * V[idx_j, idx]
-
-                for k in range(xnnz):
-                    dVUpdate = dg(f[j]-f[k])*(1/(1-g(f[k]-f[j]))-1/(1-g(f[j]-f[k])))
-                    # dV += dg(f[j]-f[k])*(1/(1-g(f[k]-f[j]))-1/(1-g(f[j]-f[k])))*U[i]
-                    for idx in range(n_factors):
-                        dV[idx] += dVUpdate * U[i, idx]
-                    
-                # V[j] += gamma*dV
-                for idx in range(n_factors):
-                    V[idx_j, idx] += gamma * dV[idx]
-                # dU += g(-f[j])*V[idx_j]
-                dUUpdate = g(-f[j])
-                for idx in range(n_factors):
-                    dU[idx] += dUUpdate * V[idx_j, idx]
-                for k in range(xnnz):
-                    idx_k = x_ind_ptr[k]
-                    # dU += (V[j]-V[k])*dg(f[k]-f[j])/(1-g(f[k]-f[j]))
-                    for idx in range(n_factors):
-                        V_j_minus_V_k[idx] = V[idx_j, idx] - V[idx_k, idx]
-                    for idx in range(n_factors):
-                        dU[idx] += V_j_minus_V_k[idx] * dg(f[k]-f[j])/(1-g(f[k]-f[j]))
-            # U[i] += gamma*dU
+                dV[idx] += dVUpdate * U[i, idx]
+            
+        # V[j] += gamma*dV
+        for idx in range(n_factors):
+            V[idx_j, idx] += gamma * dV[idx]
+        # dU += g(-f[j])*V[idx_j]
+        dUUpdate = g(-f[j])
+        for idx in range(n_factors):
+            dU[idx] += dUUpdate * V[idx_j, idx]
+        for k in range(xnnz):
+            idx_k = x_ind_ptr[k]
+            # dU += (V[j]-V[k])*dg(f[k]-f[j])/(1-g(f[k]-f[j]))
             for idx in range(n_factors):
-                U[i, idx] += gamma * dU[idx]
-
-        print 'iteration {0}:'.format(t+1)
-        print 'train mrr = {0:.8f}'.format(compute_mrr_fast(sample_user_ids, sample_user_data, U, V))
+                V_j_minus_V_k[idx] = V[idx_j, idx] - V[idx_k, idx]
+            for idx in range(n_factors):
+                dU[idx] += V_j_minus_V_k[idx] * dg(f[k]-f[j])/(1-g(f[k]-f[j]))
+    # U[i] += gamma*dU
+    for idx in range(n_factors):
+        U[i, idx] += gamma * dU[idx]
 
 
 cdef class CSRDataset:
@@ -237,7 +231,7 @@ cdef class CSRDataset:
         self.index_data_ptr = <INTEGER *> index.data
 
     cdef void next(self, DOUBLE **x_data_ptr, INTEGER **x_ind_ptr,
-                   int *nnz, DOUBLE *y, DOUBLE *sample_weight):
+                   int *nnz, DOUBLE *y, DOUBLE *sample_weight) nogil:
         cdef int current_index = self.current_index
         if current_index >= (self.n_samples - 1):
             current_index = -1
