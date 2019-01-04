@@ -119,8 +119,9 @@ cpdef climf_fast(CSRDataset dataset,
     if shuffle > 0:
         dataset.shuffle(seed)
 
-    for i in range(n_users):
-        climf_fast_u(dataset, U, V, dU, dV, f, V_j_minus_V_k, i, lbda, gamma, n_factors)
+    with nogil:
+        for i in range(n_users):
+            climf_fast_u(dataset, U, V, dU, dV, f, V_j_minus_V_k, i, lbda, gamma, n_factors)
         
 
 cdef void climf_fast_u(CSRDataset dataset, DOUBLE[:, ::1] U, DOUBLE[:, ::1] V, 
