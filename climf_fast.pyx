@@ -17,9 +17,13 @@ np.import_array()
 ctypedef np.float64_t DOUBLE
 ctypedef np.int32_t INTEGER
 
+cdef extern from 'cblas.h':
+    double ddot "cblas_ddot"(int N, double* X, int incX, double* Y,
+                             int incY) nogil
+
 cdef DOUBLE g(DOUBLE x) nogil:
     """sigmoid function"""
-    x = max(min(x, 10), -10)
+    x = max(min(x, 25), -25)
     return 1/(1+exp(-x))
 
 cdef DOUBLE dg(DOUBLE x) nogil:
@@ -43,14 +47,14 @@ cdef void precompute_f(DOUBLE[::1] f,
     """
     cdef unsigned int j = 0
     cdef unsigned int factor = 0
-    cdef DOUBLE dot_prod
 
     # create f as a ndarray of len(nnz)
     for j in range(xnnz):
-        dot_prod = 0.0
-        for factor in range(num_factors):
-            dot_prod += U[i,factor] * V[x_ind_ptr[j],factor]
-        f[j] = dot_prod
+        f[j] = ddot(num_factors, &U[i, 0], 1, &V[x_ind_ptr[j], 0], 1)
+        #dot_prod = 0.0
+        #for factor in range(num_factors):
+        #    dot_prod += U[i,factor] * V[x_ind_ptr[j],factor]
+        #f[j] = dot_prod
 
 
 def compute_mrr_fast(np.ndarray[int, ndim=1, mode='c'] test_user_ids, np.ndarray test_user_data,

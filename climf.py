@@ -44,14 +44,16 @@ class CLiMF:
         train_sample_users = np.array(random.sample(xrange(X.shape[0]),num_train_sample_users), dtype=np.int32)
         sample_user_data = np.array([np.array(X.getrow(i).indices, dtype=np.int32) for i in train_sample_users])
         
-        for t in xrange(self.max_iters):
+        for it in xrange(self.max_iters):
             start_t = time.time()
             climf_fast(data, self.U, self.V, self.lbda, self.gamma, self.dim, 
-                    self.shuffle, self.seed)
+                       self.shuffle, self.seed)
             t = time.time() - start_t
-            print('iteration {0}:'.format(t+1))
+            print('iteration {0}:'.format(it+1))
             print('train mrr = {:.8f} (time = {:.2f})'.format(compute_mrr_fast(train_sample_users, sample_user_data, self.U, self.V), t))
             sys.stdout.flush()
 
     def compute_mrr(self, testdata):
-        return compute_mrr_fast(np.array(range(testdata.shape[0]), dtype=np.int32), np.array([np.array(testdata.getrow(i).indices, dtype=np.int32) for i in range(testdata.shape[0])]), self.U, self.V)
+        return compute_mrr_fast(np.array(range(testdata.shape[0]), dtype=np.int32), 
+                                np.array([np.array(testdata.getrow(i).indices, dtype=np.int32) for i in range(testdata.shape[0])]), 
+                                self.U, self.V)
